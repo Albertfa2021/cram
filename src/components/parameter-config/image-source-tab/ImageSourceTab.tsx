@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import "./ImageSourceTab.css";
 import RayTracer from "../../../compute/raytracer";
-import {ImageSourceSolver} from "../../../compute/raytracer/image-source/index"; 
+import {ImageSourceSolver} from "../../../compute/raytracer/image-source/index";
 import { emit, on } from "../../../messenger";
 import { ObjectPropertyInputEvent } from "../../ObjectProperties";
 import { useContainer, useSolver } from "../../../store";
@@ -17,6 +17,7 @@ import PropertyRowFolder from "../property-row/PropertyRowFolder";
 import PropertyRow from "../property-row/PropertyRow";
 import PropertyRowLabel from "../property-row/PropertyRowLabel";
 import PropertyRowCheckbox from "../property-row/PropertyRowCheckbox";
+import shallow from "zustand/shallow";
 
 export interface ImageSourceTabProps {
   uuid: string;
@@ -159,28 +160,33 @@ const ImpulseResponse = ({uuid}: { uuid: string}) => {
 
 const DataExport = ({uuid}: { uuid: string}) => {
   const [open, toggle] = useToggle(true);
+  const [updateTrigger, setUpdateTrigger] = useState(0);
 
-  // Subscribe to update counter to force re-render when paths change
-  const updateCounter = useSolver(state => {
-    const solver = state.solvers[uuid] as ImageSourceSolver;
-    return solver?._pathsUpdateCounter || 0;
-  });
+  // Listen to calculation complete event for immediate UI update
+  useEffect(() => {
+    const handler = (event: EventTypes["IMAGESOURCE_CALCULATION_COMPLETE"]) => {
+      if (event.uuid === uuid) {
+        console.log("🎯 Calculation complete event received:", event);
+        setUpdateTrigger(prev => prev + 1);
+      }
+    };
+    on("IMAGESOURCE_CALCULATION_COMPLETE", handler);
+  }, [uuid]);
 
-  const validPathsCount = useSolver(state => {
-    const solver = state.solvers[uuid] as ImageSourceSolver;
-    const count = solver?.validRayPaths?.length || 0;
-    console.log("🔄 UI Re-render - Valid Paths:", count, "Update Counter:", updateCounter);
-    return count;
-  });
+  // Subscribe to solver state with shallow comparison for better reactivity
+  const { validPathsCount, totalPathsCount, updateCounter } = useSolver(
+    (state) => {
+      const solver = state.solvers[uuid] as ImageSourceSolver;
+      return {
+        validPathsCount: solver?.validRayPaths?.length || 0,
+        totalPathsCount: solver?.allRayPaths?.length || 0,
+        updateCounter: solver?._pathsUpdateCounter || 0
+      };
+    },
+    shallow
+  );
 
-  const totalPathsCount = useSolver(state => {
-    const solver = state.solvers[uuid] as ImageSourceSolver;
-    const count = solver?.allRayPaths?.length || 0;
-    console.log("🔄 UI Re-render - Total Paths:", count);
-    return count;
-  });
-
-  console.log("📊 DataExport render - Valid:", validPathsCount, "Total:", totalPathsCount, "Counter:", updateCounter);
+  console.log("📊 DataExport render - Valid:", validPathsCount, "Total:", totalPathsCount, "Counter:", updateCounter, "Trigger:", updateTrigger);
 
   return (
     <PropertyRowFolder label="Data Export" open={open} onOpenClose={toggle}>

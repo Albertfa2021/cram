@@ -473,14 +473,12 @@ export class ImageSourceSolver extends Solver {
       this.rootImageSource = is_calculated;
 
       // construct all possible paths
-      let paths: ImageSourcePath[];
+      let paths: ImageSourcePath[] | null = null;
       let valid_paths: ImageSourcePath[] = [];
       if(is_calculated != null){
         paths = is_calculated.constructPathsForAllDescendents(useContainer.getState().containers[this.receiverIDs[0]] as Receiver);
 
         console.log("  - All Paths Constructed:", paths?.length);
-
-        this.allRayPaths = paths;
 
         // get valid paths
         for(let i = 0; i<paths?.length; i++){
@@ -493,12 +491,39 @@ export class ImageSourceSolver extends Solver {
       } else {
         console.warn("⚠️ is_calculated is NULL - no paths will be generated!");
       }
+      console.log("✅ Image Source Calculation Complete:");
+      console.log("  - Valid Paths:", valid_paths?.length);
+      console.log("  - Total Paths:", paths?.length);
+      console.log("  - Solver UUID:", this.uuid);
+
+      // Store paths locally for method access
+      this.allRayPaths = paths;
       this.validRayPaths = valid_paths;
 
-      console.log("✅ Image Source Calculation Complete:");
-      console.log("  - Valid Paths:", this.validRayPaths?.length);
-      console.log("  - Total Paths:", this.allRayPaths?.length);
-      console.log("  - Solver UUID:", this.uuid);
+      // Trigger Zustand state update with forced new references
+      // CRITICAL: Must create NEW array references for Immer to detect changes
+      console.log("🔄 Triggering Zustand state update...");
+      this._pathsUpdateCounter++;
+
+      useSolver.getState().set(draft => {
+        const solver = draft.solvers[this.uuid] as ImageSourceSolver;
+        // Force NEW references - critical for Zustand reactivity!
+        // Using slice() creates a new array reference
+        solver.allRayPaths = paths ? paths.slice() : null;
+        solver.validRayPaths = valid_paths ? valid_paths.slice() : null;
+        solver._pathsUpdateCounter = this._pathsUpdateCounter;
+        console.log("  📝 Set callback executed - Counter:", solver._pathsUpdateCounter);
+      });
+
+      console.log("✅ Zustand state updated - Counter:", this._pathsUpdateCounter);
+
+      // Emit completion event to notify UI components
+      emit("IMAGESOURCE_CALCULATION_COMPLETE", {
+        uuid: this.uuid,
+        validPathsCount: valid_paths?.length || 0,
+        totalPathsCount: paths?.length || 0,
+        updateCounter: this._pathsUpdateCounter
+      });
 
       (this._imageSourcesVisible) && (this.drawImageSources());
       (this._rayPathsVisible) && (this.drawRayPaths());
@@ -506,16 +531,6 @@ export class ImageSourceSolver extends Solver {
       if(!this.isHybrid){
         this.calculateLTP(343);
       }
-
-      // Trigger Zustand state update to notify React components
-      // Increment counter to force Zustand to detect the change (since this === draft.solvers[uuid])
-      console.log("🔄 Triggering Zustand state update...");
-      this._pathsUpdateCounter++;
-      useSolver.getState().set(draft => {
-        // Force update by modifying the counter (type assertion needed for subclass property)
-        (draft.solvers[this.uuid] as ImageSourceSolver)._pathsUpdateCounter = this._pathsUpdateCounter;
-      });
-      console.log("✅ Zustand state updated - Valid:", this.validRayPaths?.length, "All:", this.allRayPaths?.length, "Counter:", this._pathsUpdateCounter);
     }
 
     // hybrid solver use only
@@ -1271,6 +1286,12 @@ declare global {
     IMAGESOURCE_PLAY_IR: string;
     IMAGESOURCE_DOWNLOAD_IR: string;
     IMAGESOURCE_EXPORT_PATHS: string;
+    IMAGESOURCE_CALCULATION_COMPLETE: {
+      uuid: string;
+      validPathsCount: number;
+      totalPathsCount: number;
+      updateCounter: number;
+    };
   }
 }
 
