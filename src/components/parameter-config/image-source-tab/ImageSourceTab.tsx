@@ -157,6 +157,47 @@ const ImpulseResponse = ({uuid}: { uuid: string}) => {
   )
 }
 
+const DataExport = ({uuid}: { uuid: string}) => {
+  const [open, toggle] = useToggle(true);
+
+  // Subscribe to update counter to force re-render when paths change
+  const updateCounter = useSolver(state => {
+    const solver = state.solvers[uuid] as ImageSourceSolver;
+    return solver?._pathsUpdateCounter || 0;
+  });
+
+  const validPathsCount = useSolver(state => {
+    const solver = state.solvers[uuid] as ImageSourceSolver;
+    const count = solver?.validRayPaths?.length || 0;
+    console.log("🔄 UI Re-render - Valid Paths:", count, "Update Counter:", updateCounter);
+    return count;
+  });
+
+  const totalPathsCount = useSolver(state => {
+    const solver = state.solvers[uuid] as ImageSourceSolver;
+    const count = solver?.allRayPaths?.length || 0;
+    console.log("🔄 UI Re-render - Total Paths:", count);
+    return count;
+  });
+
+  console.log("📊 DataExport render - Valid:", validPathsCount, "Total:", totalPathsCount, "Counter:", updateCounter);
+
+  return (
+    <PropertyRowFolder label="Data Export" open={open} onOpenClose={toggle}>
+      <PropertyRow>
+        <PropertyRowLabel label={`Valid Paths: ${validPathsCount} / ${totalPathsCount}`} hasToolTip={false} />
+      </PropertyRow>
+      <PropertyButton
+        event="IMAGESOURCE_EXPORT_PATHS"
+        args={uuid}
+        label="Export Ray Paths (JSON)"
+        tooltip="Export all ray path data including reflections, attenuation, and image sources"
+        disabled={validPathsCount === 0}
+      />
+    </PropertyRowFolder>
+  );
+}
+
 const Developer = ({ uuid }: { uuid: string}) => {
   const [open, toggle] = useToggle(true);
   return (
@@ -175,6 +216,7 @@ export const ImageSourceTab = ({ uuid }: ImageSourceTabProps) => {
       <ReceiverConfiguration uuid={uuid}/>
       <Graphing uuid={uuid}/>
       <ImpulseResponse uuid={uuid}/>
+      <DataExport uuid={uuid}/>
       <Developer uuid={uuid}/>
     </div>
   );

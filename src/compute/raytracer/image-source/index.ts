@@ -343,12 +343,13 @@ export class ImageSourceSolver extends Solver {
     private _rayPathsVisible: boolean;
     private _plotOrders: number[]; 
 
-    impulseResponse!: AudioBuffer; 
-    impulseResponsePlaying: boolean; 
+    impulseResponse!: AudioBuffer;
+    impulseResponsePlaying: boolean;
 
-    rootImageSource: ImageSource | null; 
-    validRayPaths: ImageSourcePath[] | null; 
-    allRayPaths: ImageSourcePath[] | null; 
+    rootImageSource: ImageSource | null;
+    validRayPaths: ImageSourcePath[] | null;
+    allRayPaths: ImageSourcePath[] | null;
+    _pathsUpdateCounter: number; // Used to force Zustand to detect changes
 
     selectedImageSourcePath: MeshLine;
 
@@ -391,11 +392,12 @@ export class ImageSourceSolver extends Solver {
           } as Result<ResultKind.LevelTimeProgression>);
         }
 
-        this.surfaceIDs = []; 
-        
+        this.surfaceIDs = [];
+
         this.rootImageSource = null;
-        this.allRayPaths = null;  
-        this.validRayPaths = null; 
+        this.allRayPaths = null;
+        this.validRayPaths = null;
+        this._pathsUpdateCounter = 0; // Initialize update counter
 
         const rooms = getRooms();
 
@@ -443,48 +445,77 @@ export class ImageSourceSolver extends Solver {
 
     updateImageSourceCalculation(){
 
+      console.log("🔧 Starting Image Source Calculation...");
+      console.log("  - Source IDs:", this.sourceIDs);
+      console.log("  - Receiver IDs:", this.receiverIDs);
+      console.log("  - Max Reflection Order:", this.maxReflectionOrder);
+
       // clear markup (replace with a more robust method eventually)
-      this.clearRayPaths(); 
-      this.clearImageSources(); 
+      this.clearRayPaths();
+      this.clearImageSources();
 
       // add in checking to make sure only 1 source and 1 receiver are selected
 
       let is_params: ImageSourceParams = {
         baseSource: useContainer.getState().containers[this.sourceIDs[0]] as Source,
-        position: (useContainer.getState().containers[this.sourceIDs[0]] as Source).position.clone(), 
-        room: this.room, 
+        position: (useContainer.getState().containers[this.sourceIDs[0]] as Source).position.clone(),
+        room: this.room,
         reflector: null,
-        parent: null, 
-        order: 0, 
+        parent: null,
+        order: 0,
       };
-      
-      let is_base: ImageSource = new ImageSource(is_params);
-      let is_calculated: ImageSource | null = computeImageSources(is_base,this.maxReflectionOrder); 
 
-      this.rootImageSource = is_calculated; 
+      let is_base: ImageSource = new ImageSource(is_params);
+      let is_calculated: ImageSource | null = computeImageSources(is_base,this.maxReflectionOrder);
+
+      console.log("  - Image Source Computed:", is_calculated !== null);
+
+      this.rootImageSource = is_calculated;
 
       // construct all possible paths
       let paths: ImageSourcePath[];
-      let valid_paths: ImageSourcePath[] = []; 
+      let valid_paths: ImageSourcePath[] = [];
       if(is_calculated != null){
         paths = is_calculated.constructPathsForAllDescendents(useContainer.getState().containers[this.receiverIDs[0]] as Receiver);
 
-        this.allRayPaths = paths; 
+        console.log("  - All Paths Constructed:", paths?.length);
+
+        this.allRayPaths = paths;
 
         // get valid paths
         for(let i = 0; i<paths?.length; i++){
-          if(paths[i].isvalid(this.room.allSurfaces as Surface[])){
-            valid_paths.push(paths[i]); 
+          const isValid = paths[i].isvalid(this.room.allSurfaces as Surface[]);
+          console.log(`    Path ${i}: Order=${paths[i].order}, Valid=${isValid}`);
+          if(isValid){
+            valid_paths.push(paths[i]);
           }
         }
+      } else {
+        console.warn("⚠️ is_calculated is NULL - no paths will be generated!");
       }
-      this.validRayPaths = valid_paths; 
+      this.validRayPaths = valid_paths;
+
+      console.log("✅ Image Source Calculation Complete:");
+      console.log("  - Valid Paths:", this.validRayPaths?.length);
+      console.log("  - Total Paths:", this.allRayPaths?.length);
+      console.log("  - Solver UUID:", this.uuid);
+
       (this._imageSourcesVisible) && (this.drawImageSources());
-      (this._rayPathsVisible) && (this.drawRayPaths()); 
+      (this._rayPathsVisible) && (this.drawRayPaths());
 
       if(!this.isHybrid){
-        this.calculateLTP(343); 
+        this.calculateLTP(343);
       }
+
+      // Trigger Zustand state update to notify React components
+      // Increment counter to force Zustand to detect the change (since this === draft.solvers[uuid])
+      console.log("🔄 Triggering Zustand state update...");
+      this._pathsUpdateCounter++;
+      useSolver.getState().set(draft => {
+        // Force update by modifying the counter (type assertion needed for subclass property)
+        (draft.solvers[this.uuid] as ImageSourceSolver)._pathsUpdateCounter = this._pathsUpdateCounter;
+      });
+      console.log("✅ Zustand state updated - Valid:", this.validRayPaths?.length, "All:", this.allRayPaths?.length, "Counter:", this._pathsUpdateCounter);
     }
 
     // hybrid solver use only
@@ -761,6 +792,153 @@ export class ImageSourceSolver extends Solver {
       const blob = ac.wavAsBlob([normalize(this.impulseResponse.getChannelData(0))], { sampleRate, bitDepth: 32 });
       const extension = !filename.endsWith(".wav") ? ".wav" : "";
       FileSaver.saveAs(blob, filename + extension);
+    }
+
+    /**
+     * Extract absorption coefficients for all frequencies
+     */
+    private extractAbsorptionCoeffs(surface: Surface): any {
+      const coeffs = {};
+      this.frequencies.forEach(freq => {
+        coeffs[`${freq}Hz`] = surface.absorptionFunction(freq);
+      });
+      return coeffs;
+    }
+
+    /**
+     * Extract image sources from a ray path by backtracking reflections
+     */
+    private extractImageSourcesFromPath(path: ImageSourcePath): any[] {
+      const imageSources: any[] = [];
+
+      // Traverse the path and extract image source information from reflections
+      path.path.forEach((inter, index) => {
+        if (inter.reflectingSurface !== null && index > 0 && index < path.path.length - 1) {
+          imageSources.push({
+            order: index,
+            position: {
+              x: parseFloat(inter.point.x.toFixed(4)),
+              y: parseFloat(inter.point.y.toFixed(4)),
+              z: parseFloat(inter.point.z.toFixed(4))
+            },
+            reflectorUUID: inter.reflectingSurface.uuid,
+            reflectorName: inter.reflectingSurface.name
+          });
+        }
+      });
+
+      return imageSources;
+    }
+
+    /**
+     * Extract detailed data for a single ray path
+     */
+    private extractPathData(path: ImageSourcePath, initialSPL: number[], soundSpeed: number): any {
+      const arrivalPressureArray = path.arrivalPressure(initialSPL, this.frequencies);
+      const arrivalTime = path.arrivalTime(soundSpeed);
+
+      // Convert to frequency-mapped format
+      const arrivalPressure = {};
+      this.frequencies.forEach((freq, index) => {
+        arrivalPressure[`${freq}Hz`] = ac.P2Lp([arrivalPressureArray[index]])[0];
+      });
+
+      // Extract intersection information
+      const intersections = path.path.map((inter, index) => {
+        const nextPoint = path.path[index + 1];
+        const segmentLength = nextPoint ? inter.point.distanceTo(nextPoint.point) : 0;
+
+        let interType: string;
+        if (index === 0) interType = "source";
+        else if (index === path.path.length - 1) interType = "receiver";
+        else interType = "reflection";
+
+        return {
+          index: index,
+          type: interType,
+          position: {
+            x: parseFloat(inter.point.x.toFixed(4)),
+            y: parseFloat(inter.point.y.toFixed(4)),
+            z: parseFloat(inter.point.z.toFixed(4))
+          },
+          surfaceName: inter.reflectingSurface?.name || null,
+          surfaceUUID: inter.reflectingSurface?.uuid || null,
+          surfaceMaterial: inter.reflectingSurface?._acousticMaterial?.material || null,
+          absorptionCoefficients: inter.reflectingSurface ? this.extractAbsorptionCoeffs(inter.reflectingSurface) : null,
+          incidenceAngle_deg: inter.angle !== null ? parseFloat((inter.angle * 180 / Math.PI).toFixed(2)) : null,
+          segmentLength: parseFloat(segmentLength.toFixed(4))
+        };
+      });
+
+      // Extract image sources
+      const imageSources = this.extractImageSourcesFromPath(path);
+
+      return {
+        pathUUID: path.uuid,
+        order: path.order,
+        isValid: true,
+        pathLength: parseFloat(path.totalLength.toFixed(4)),
+        arrivalTime: parseFloat(arrivalTime.toFixed(6)),
+        arrivalPressure: arrivalPressure,
+        intersections: intersections,
+        imageSources: imageSources
+      };
+    }
+
+    /**
+     * Export all ray paths data as a structured object
+     * @returns Object containing metadata and all ray path information
+     */
+    exportRayPathsData(): any {
+      if (!this.validRayPaths || this.validRayPaths.length === 0) {
+        throw new Error("No valid ray paths to export. Please run calculation first.");
+      }
+
+      const source = this.sources[0] as Source;
+      const receiver = this.receivers[0] as Receiver;
+      const initialSPL = Array(this.frequencies.length).fill(100);
+      const soundSpeed = 343;
+
+      // Build metadata
+      const metadata = {
+        solver: "Image Source Method",
+        solverName: this.name,
+        solverUUID: this.uuid,
+        exportDate: new Date().toISOString(),
+        sourceCount: this.sourceIDs.length,
+        receiverCount: this.receiverIDs.length,
+        maxReflectionOrder: this.maxReflectionOrder,
+        soundSpeed: soundSpeed,
+        frequencies: this.frequencies,
+        initialSPL: initialSPL,
+        totalValidPaths: this.validRayPaths.length,
+        totalPaths: this.allRayPaths?.length || 0
+      };
+
+      // Extract data for each path
+      const rayPaths = this.validRayPaths.map((path) => this.extractPathData(path, initialSPL, soundSpeed));
+
+      return {
+        metadata,
+        rayPaths
+      };
+    }
+
+    /**
+     * Export ray paths data to JSON file and download
+     * @param filename Base filename (without extension)
+     */
+    async exportRayPathsToFile(filename: string = "ray-paths"): Promise<void> {
+      try {
+        const data = this.exportRayPathsData();
+        const jsonString = JSON.stringify(data, null, 2);
+        const blob = new Blob([jsonString], { type: "application/json" });
+        const extension = !filename.endsWith(".json") ? ".json" : "";
+        FileSaver.saveAs(blob, `${filename}-${this.uuid.slice(0, 8)}${extension}`);
+      } catch (error) {
+        console.error("Failed to export ray paths:", error);
+        throw error;
+      }
     }
 
     // getters and setters
@@ -1085,13 +1263,14 @@ declare global {
     IMAGESOURCE_SET_PROPERTY: {
       uuid: string;
       property: keyof ImageSourceSolver;
-      value: ImageSourceSolver[EventTypes["IMAGESOURCE_SET_PROPERTY"]["property"]]; 
+      value: ImageSourceSolver[EventTypes["IMAGESOURCE_SET_PROPERTY"]["property"]];
     }
-    UPDATE_IMAGESOURCE: string; 
+    UPDATE_IMAGESOURCE: string;
     RESET_IMAGESOURCE: string;
-    CALCULATE_LTP: string; 
-    IMAGESOURCE_PLAY_IR: string; 
-    IMAGESOURCE_DOWNLOAD_IR: string; 
+    CALCULATE_LTP: string;
+    IMAGESOURCE_PLAY_IR: string;
+    IMAGESOURCE_DOWNLOAD_IR: string;
+    IMAGESOURCE_EXPORT_PATHS: string;
   }
 }
 
@@ -1103,6 +1282,7 @@ on("RESET_IMAGESOURCE", (uuid: string) => void (useSolver.getState().solvers[uui
 on("CALCULATE_LTP", (uuid: string) => void (useSolver.getState().solvers[uuid] as ImageSourceSolver).calculateLTP(343));
 on("IMAGESOURCE_PLAY_IR", (uuid: string) => void (useSolver.getState().solvers[uuid] as ImageSourceSolver).playImpulseResponse().catch(console.error));
 on("IMAGESOURCE_DOWNLOAD_IR", (uuid: string) => void (useSolver.getState().solvers[uuid] as ImageSourceSolver).downloadImpulseResponse(`ir-imagesource-${uuid}`).catch(console.error));
+on("IMAGESOURCE_EXPORT_PATHS", (uuid: string) => void (useSolver.getState().solvers[uuid] as ImageSourceSolver).exportRayPathsToFile(`ray-paths-${useSolver.getState().solvers[uuid].name}`).catch(console.error));
 
 
 
