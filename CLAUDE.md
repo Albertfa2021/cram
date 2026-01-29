@@ -162,6 +162,12 @@ All solvers extend `Solver` class (`src/compute/solver.ts`):
 - `constructImageSourceTreeRecursive()`: Builds reflection tree up to `maxReflectionOrder`
 - `constructPathsForAllDescendents()`: Extracts valid ray paths with visibility testing
 - Output: Level-time progression showing discrete early reflections
+- **JSON Export**: `exportRayPathsToFile()` exports complete path data including:
+  - Reflection point positions with surface information
+  - Frequency-dependent absorption coefficients per surface
+  - Incidence angles and segment lengths
+  - Image source positions for each reflection order
+  - Arrival times and pressure levels at all octave bands
 
 **2D FDTD** (`src/compute/2d-fdtd/index.ts`):
 - GPU-accelerated wave propagation using `GPUComputationRenderer`
@@ -240,6 +246,14 @@ The `Renderer` class (`src/render/renderer.ts`) is the central hub connecting co
 - **CSV**: Direct blob creation for RT60 results
 - **WAV**: Ray tracer audio buffers via FileSaver
 - **Charts**: Plotly.js built-in download
+- **JSON (Image Source)**: Detailed ray path data export
+  - Triggered via `emit("IMAGESOURCE_EXPORT_PATHS", uuid)`
+  - Export format includes:
+    - Metadata: solver settings, frequency list, source/receiver info
+    - Per-path data: intersections, reflections, materials, absorption coefficients
+    - Image source positions and reflection orders
+    - Arrival times and frequency-dependent pressure levels
+  - File naming: `ray-paths-{solverName}-{uuid}.json`
 
 ## Material Database
 
@@ -298,6 +312,8 @@ Acoustic materials are stored as static JSON (`src/db/material.json`) containing
 
 6. **Solvers own visualization logic** - Each solver manages its own display (e.g., ray tracer adds point shader meshes to scene). Keeps related code together but couples compute and rendering.
 
+7. **Event-driven UI updates for real-time feedback** (v0.2.2) - Complex solver calculations use event emission + new reference creation to ensure immediate UI updates. Combines Zustand subscriptions with event listeners for dual guarantees. Critical for calculations where users expect instant visual feedback.
+
 ## Common Patterns
 
 ### Subscribing to Store Changes in React
@@ -335,9 +351,143 @@ useContainer.getState().set(draft => {
 });
 ```
 
+## UI Reactivity Patterns
+
+### Real-time State Updates in Solver Methods
+
+**Challenge**: When a solver method modifies its own properties (e.g., `this.validRayPaths = paths`), Zustand + Immer may not detect changes because the solver object is already in the store.
+
+**Solution Pattern** (implemented in Image Source Method v0.2.2):
+
+```typescript
+updateImageSourceCalculation() {
+  // ... calculation logic ...
+
+  // 1. Store locally for method access
+  this.allRayPaths = paths;
+  this.validRayPaths = valid_paths;
+
+  // 2. Force new array references in Zustand store
+  //    CRITICAL: Use .slice() to create new references for Immer detection
+  this._pathsUpdateCounter++;
+  useSolver.getState().set(draft => {
+    const solver = draft.solvers[this.uuid] as ImageSourceSolver;
+    solver.allRayPaths = paths ? paths.slice() : null;
+    solver.validRayPaths = valid_paths ? valid_paths.slice() : null;
+    solver._pathsUpdateCounter = this._pathsUpdateCounter;
+  });
+
+  // 3. Emit completion event for immediate UI update
+  emit("IMAGESOURCE_CALCULATION_COMPLETE", {
+    uuid: this.uuid,
+    validPathsCount: valid_paths?.length || 0,
+    totalPathsCount: paths?.length || 0,
+    updateCounter: this._pathsUpdateCounter
+  });
+}
+```
+
+**Key Techniques**:
+
+1. **New Array References**: Use `.slice()` to create new array references. Immer detects changes via reference equality.
+
+2. **Update Counter**: Increment a counter to force Zustand to notify subscribers even if array contents are identical.
+
+3. **Event-Driven Updates**: Emit completion events (similar to `UPDATE_RESULT` pattern) for components that need immediate feedback.
+
+**UI Component Pattern**:
+
+```typescript
+const DataExport = ({uuid}: { uuid: string}) => {
+  const [updateTrigger, setUpdateTrigger] = useState(0);
+
+  // Listen to calculation complete event
+  useEffect(() => {
+    const handler = (event: EventTypes["IMAGESOURCE_CALCULATION_COMPLETE"]) => {
+      if (event.uuid === uuid) {
+        setUpdateTrigger(prev => prev + 1); // Force re-render
+      }
+    };
+    on("IMAGESOURCE_CALCULATION_COMPLETE", handler);
+  }, [uuid]);
+
+  // Subscribe with shallow comparison
+  const { validPathsCount, totalPathsCount } = useSolver(
+    (state) => {
+      const solver = state.solvers[uuid] as ImageSourceSolver;
+      return {
+        validPathsCount: solver?.validRayPaths?.length || 0,
+        totalPathsCount: solver?.allRayPaths?.length || 0
+      };
+    },
+    shallow // Import from 'zustand/shallow'
+  );
+
+  // Component updates immediately when calculation completes
+  return <div>Valid Paths: {validPathsCount} / {totalPathsCount}</div>;
+};
+```
+
+**Why This Pattern Works**:
+
+- **Zustand Subscription**: Detects store changes via new references
+- **Event System**: Provides immediate notification (bypasses any subscription delays)
+- **Shallow Comparison**: Optimizes re-renders by comparing object properties, not references
+- **Dual Guarantees**: Even if one mechanism fails, the other ensures UI updates
+
+**When to Use This Pattern**:
+
+- Solver methods that modify large arrays/objects and need immediate UI feedback
+- Complex calculations where UI should update instantly upon completion
+- Any case where "switch page and come back" triggers the update (indicates state update detection issue)
+
+**Reference Implementation**: Image Source Method export mechanism (v0.2.2)
+- File: `src/compute/raytracer/image-source/index.ts`
+- Component: `src/components/parameter-config/image-source-tab/ImageSourceTab.tsx` (DataExport component)
+
 ## Known Limitations
 
 - FDTD is 2D only (GPU texture limitations in WebGL 1.0)
 - Air absorption coefficients hardcoded for 20°C, 40% RH
 - No UI for custom material creation
 - Material database is read-only at runtime
+
+## Recent Updates
+
+### v0.2.2 - Image Source Export Mechanism Update (2026-01-29)
+
+**Problem Solved**: Image Source Method's Data Export panel did not update in real-time after clicking "Update" button. Users had to switch tabs and return to see the updated valid path count and enable the export button.
+
+**Root Cause**: Solver methods directly modifying `this.allRayPaths` and `this.validRayPaths` bypassed Zustand's change detection. Since the solver object was already in the store, Immer's proxy couldn't detect the reference change.
+
+**Implementation**:
+
+1. **Array Reference Creation**: Used `.slice()` to create new array references in Zustand store update
+   ```typescript
+   solver.allRayPaths = paths ? paths.slice() : null;
+   ```
+
+2. **Event-Driven Updates**: Added `IMAGESOURCE_CALCULATION_COMPLETE` event emission after calculation
+   ```typescript
+   emit("IMAGESOURCE_CALCULATION_COMPLETE", { uuid, validPathsCount, totalPathsCount, updateCounter });
+   ```
+
+3. **Component Event Listening**: UI components listen to completion events and force re-render
+   ```typescript
+   useEffect(() => {
+     on("IMAGESOURCE_CALCULATION_COMPLETE", (event) => {
+       if (event.uuid === uuid) setUpdateTrigger(prev => prev + 1);
+     });
+   }, [uuid]);
+   ```
+
+4. **Shallow Comparison**: Optimized Zustand selectors with `shallow` comparison from `zustand/shallow`
+
+**Result**: Export button and valid path count now update immediately upon calculation completion, providing instant visual feedback to users.
+
+**Files Modified**:
+- `src/compute/raytracer/image-source/index.ts` - Added event emission and reference creation
+- `src/components/parameter-config/image-source-tab/ImageSourceTab.tsx` - Added event listener and force update mechanism
+
+**Pattern Established**: This event-driven + reference-update pattern can be reused for other solvers requiring real-time UI updates after long calculations.
+
