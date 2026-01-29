@@ -20,6 +20,12 @@ npm run build
 
 # Run tests
 npm test
+
+# Network backend server commands
+npm run server:install    # Install backend dependencies
+npm run server:start      # Start backend server (production mode)
+npm run server:dev        # Start backend server (development mode with auto-reload)
+npm run server:test       # Start mock TCP server for testing
 ```
 
 The build system uses custom webpack configuration in `config/webpack.config.js` with support for:
@@ -39,6 +45,7 @@ CRAM follows a layered architecture with clear separation:
 3. **Business Logic Layer** (`src/compute/`) - Acoustic solvers and algorithms
 4. **Data Layer** (`src/objects/`) - Scene object models
 5. **Rendering Layer** (`src/render/`) - Three.js 3D visualization
+6. **Network Layer** (`src/network/`) - WebSocket client for TCP bridge communication
 
 ### Dual Messaging Systems
 
@@ -67,6 +74,7 @@ All application state is managed through Zustand stores in `src/store/`:
 | `app-store.ts` | Global UI state | `projectName`, `units`, undo/redo |
 | `material-store.ts` | Acoustic materials | Indexed material database |
 | `settings-store.ts` | Renderer settings | Camera, grid, lighting config |
+| `network-store.ts` | Network transport | `wsConnected`, `tcpConnected`, transmission status |
 
 **Update pattern** (uses Immer for immutability):
 ```typescript
@@ -254,6 +262,11 @@ The `Renderer` class (`src/render/renderer.ts`) is the central hub connecting co
     - Image source positions and reflection orders
     - Arrival times and frequency-dependent pressure levels
   - File naming: `ray-paths-{solverName}-{uuid}.json`
+- **Network (Image Source)**: Real-time TCP transmission to LAN servers
+  - Triggered via `solver.sendToNetwork()` or UI "Send to Network" button
+  - Uses WebSocket → Backend → TCP bridge architecture
+  - Same JSON structure as file export, transmitted with length-prefixed framing
+  - Requires backend server running (`npm run server:start`)
 
 ## Material Database
 
@@ -275,6 +288,8 @@ Acoustic materials are stored as static JSON (`src/db/material.json`) containing
 4. **`src/render/renderer.ts`** - Rendering + scene management
 5. **`src/objects/container.ts`** - Base object model
 6. **`src/compute/solver.ts`** - Base solver class
+7. **`src/network/network-service.ts`** - Network transport service (WebSocket client)
+8. **`server/index.js`** - Backend TCP/WebSocket bridge server
 
 ## Adding New Features
 
@@ -314,6 +329,8 @@ Acoustic materials are stored as static JSON (`src/db/material.json`) containing
 
 7. **Event-driven UI updates for real-time feedback** (v0.2.2) - Complex solver calculations use event emission + new reference creation to ensure immediate UI updates. Combines Zustand subscriptions with event listeners for dual guarantees. Critical for calculations where users expect instant visual feedback.
 
+8. **Three-tier network architecture for data export** (v0.2.3) - Browser cannot directly create TCP sockets due to security restrictions. Solution: Node.js backend acts as TCP bridge, communicating with browser via WebSocket. Trade-off: requires backend server but enables reliable TCP transmission to LAN servers with auto-reconnection and message queueing.
+
 ## Common Patterns
 
 ### Subscribing to Store Changes in React
@@ -348,6 +365,33 @@ const containers = useContainer.getState().containers;
 // Update state
 useContainer.getState().set(draft => {
   draft.containers[uuid].name = "New Name";
+});
+```
+
+### Network Data Transmission
+
+```typescript
+import { emit } from './messenger';
+
+// Send solver data to network (v0.2.3)
+// Method 1: Direct method call
+const solver = useSolver.getState().solvers[uuid] as ImageSourceSolver;
+solver.sendToNetwork(); // Emits NETWORK_SEND_DATA event
+
+// Method 2: Via event emission
+emit("NETWORK_SEND_DATA", {
+  solverUUID: uuid,
+  data: exportedData,
+  timestamp: new Date().toISOString()
+});
+
+// Listen for transmission complete
+on("NETWORK_TRANSMISSION_COMPLETE", (event) => {
+  if (event.success) {
+    console.log(`Transmitted ${event.bytesTransmitted} bytes`);
+  } else {
+    console.error(`Transmission failed: ${event.error}`);
+  }
 });
 ```
 
@@ -490,4 +534,98 @@ const DataExport = ({uuid}: { uuid: string}) => {
 - `src/components/parameter-config/image-source-tab/ImageSourceTab.tsx` - Added event listener and force update mechanism
 
 **Pattern Established**: This event-driven + reference-update pattern can be reused for other solvers requiring real-time UI updates after long calculations.
+
+### v0.2.3 - TCP Network Transport for Image Source Data (2026-01-29)
+
+**Feature Added**: Implemented TCP network transport capabilities for real-time transmission of Image Source ray path data to LAN servers via a Node.js backend bridge.
+
+**Architecture**: Three-tier communication system
+```
+Browser (React) ↔ WebSocket ↔ Node.js Backend ↔ TCP Socket ↔ Target Server
+```
+
+**Key Components**:
+
+1. **Backend Server** (`server/`)
+   - **TCP Client** (`tcp-client.js`): Auto-reconnecting TCP client with length-prefixed message framing
+     - Exponential backoff (1s → 30s), max 10 reconnection attempts
+     - Message queueing for failed transmissions
+     - Frame format: `[4-byte Big-Endian length][JSON payload]`
+   - **WebSocket Server** (`websocket-server.js`): Browser-backend communication bridge
+     - Real-time status broadcasts
+     - Command handling (SEND_DATA, UPDATE_CONFIG, CONNECT, DISCONNECT)
+   - **Configuration** (`config.js`, `.env`): Runtime configurable TCP host/port
+
+2. **Frontend Network Module** (`src/network/`)
+   - **Network Service** (`network-service.ts`): WebSocket client with auto-reconnect
+   - **Network Store** (`network-store.ts`): Zustand state for connection status and transmission tracking
+   - **Network Events** (`network-events.ts`): Event definitions (NETWORK_SEND_DATA, NETWORK_TRANSMISSION_COMPLETE, etc.)
+
+3. **UI Components**
+   - **NetworkConfig** (`NetworkConfig.tsx`): Connection configuration panel
+     - WebSocket and TCP status indicators (🟢/🔴/⚫)
+     - Dynamic IP/Port configuration
+     - Connect/disconnect controls
+   - **TransmissionStatus** (`TransmissionStatus.tsx`): Transmission tracking
+     - Last transmission timestamp and status
+     - Bytes transmitted counter
+     - Error message display
+
+4. **Integration**
+   - Added `sendToNetwork()` method to `ImageSourceSolver`
+   - Integrated network UI into Image Source tab
+   - Event-driven transmission via `NETWORK_SEND_DATA` event
+
+**Features**:
+- Length-prefixed TCP framing prevents message boundary issues
+- Auto-reconnection with exponential backoff
+- Message queueing for offline scenarios
+- Real-time connection status updates
+- Structured JSON export with metadata, ray paths, reflections, and attenuation data
+
+**Files Created**:
+- Backend: `server/index.js`, `tcp-client.js`, `websocket-server.js`, `config.js`, `test/mock-tcp-server.js`
+- Frontend: `src/network/network-service.ts`, `network-store.ts`, `network-events.ts`
+- UI: `NetworkConfig.tsx`, `TransmissionStatus.tsx`
+- Documentation: `NETWORK_IMPLEMENTATION.md` (comprehensive guide), `server/README.md`
+
+**Files Modified**:
+- `src/events.ts` - Added network event imports
+- `src/store/index.ts` - Exported network store
+- `src/compute/raytracer/image-source/index.ts` - Added `sendToNetwork()` method
+- `src/components/parameter-config/image-source-tab/ImageSourceTab.tsx` - Integrated network UI
+- `package.json` - Added server npm scripts (server:install, server:start, server:dev, server:test)
+
+**Usage**:
+1. Install backend dependencies: `cd server && npm install`
+2. Start mock TCP server (testing): `node server/test/mock-tcp-server.js --port 5000`
+3. Start backend server: `cd server && npm start`
+4. Start CRAM frontend: `npm start`
+5. In CRAM: Configure TCP target → Connect → Send data to network
+
+**Testing**: Mock TCP server included for local testing, logs received JSON data with full ray path details.
+
+**Documentation**: See `NETWORK_IMPLEMENTATION.md` for detailed architecture, protocol specification, troubleshooting, and deployment guide.
+
+**Production Deployment**: Supports Windows Service, Linux systemd, and Docker deployment options.
+
+**Bug Fixes** (2026-01-29):
+
+1. **Network Store Compilation Error**: Fixed incorrect Zustand + Immer integration in `network-store.ts`
+   - Changed from `import { immer } from 'zustand/middleware/immer'` to `import produce from 'immer'`
+   - Updated store creation pattern to match project convention: `create<T>((set, get) => ({ set: (fn) => set(produce(fn)) }))`
+   - Aligned with existing stores (`container-store.ts`, `solver-store.ts`)
+
+2. **Infinite Event Loop in Network Service**: Fixed recursive event emission causing message flooding
+   - Root cause: `sendData()` and `updateConfig()` methods re-emitted the same events that triggered them
+   - Removed `emit('NETWORK_SEND_DATA')` from `sendData()` method (line 266)
+   - Removed `emit('NETWORK_UPDATE_CONFIG')` from `updateConfig()` method (line 279)
+   - Pattern: Event handlers call service methods, service methods should NOT re-emit triggering events
+
+3. **Shallow Import Error**: Fixed incorrect `shallow` import in network components
+   - Changed from `import { shallow } from 'zustand/shallow'` to `import shallow from 'zustand/shallow'`
+   - Fixed in `NetworkConfig.tsx` and `TransmissionStatus.tsx`
+   - Aligned with existing usage in `ImageSourceTab.tsx`
+
+**Result**: Network transmission now works correctly with single-shot data sending, no message flooding.
 

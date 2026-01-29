@@ -7,6 +7,7 @@ export * from './result-store';
 export * from './solver-store';
 export * from './app-store';
 export * from './io';
+export * from '../network/network-store';
 
 
 declare global {

@@ -17,7 +17,11 @@
   "scripts": {
     "start": "set NODE_OPTIONS=--openssl-legacy-provider && node scripts/start.js",
     "build": "set NODE_OPTIONS=--openssl-legacy-provider && node scripts/build.js",
-    "test": "node scripts/test.js --env=jsdom"
+    "test": "node scripts/test.js --env=jsdom",
+    "server:install": "cd server && npm install",
+    "server:start": "cd server && npm start",
+    "server:dev": "cd server && npm run dev",
+    "server:test": "cd server && npm run test"
   },
   "dependencies": {
     "@blueprintjs/core": "^3.23.0",

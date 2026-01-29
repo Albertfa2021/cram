@@ -956,6 +956,25 @@ export class ImageSourceSolver extends Solver {
       }
     }
 
+    /**
+     * Send ray paths data to network server
+     * Emits NETWORK_SEND_DATA event with structured JSON payload
+     */
+    sendToNetwork(): void {
+      try {
+        const data = this.exportRayPathsData();
+        emit("NETWORK_SEND_DATA", {
+          solverUUID: this.uuid,
+          data: data,
+          timestamp: new Date().toISOString()
+        });
+        console.log("[ImageSource] Data sent to network service");
+      } catch (error) {
+        console.error("Failed to send data to network:", error);
+        throw error;
+      }
+    }
+
     // getters and setters
     get sources() {
       if (this.sourceIDs.length > 0) {

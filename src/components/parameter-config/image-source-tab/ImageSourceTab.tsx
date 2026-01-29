@@ -18,6 +18,8 @@ import PropertyRow from "../property-row/PropertyRow";
 import PropertyRowLabel from "../property-row/PropertyRowLabel";
 import PropertyRowCheckbox from "../property-row/PropertyRowCheckbox";
 import shallow from "zustand/shallow";
+import { NetworkConfig } from "./NetworkConfig";
+import { TransmissionStatus } from "./TransmissionStatus";
 
 export interface ImageSourceTabProps {
   uuid: string;
@@ -213,6 +215,18 @@ const Developer = ({ uuid }: { uuid: string}) => {
   );
 }
 export const ImageSourceTab = ({ uuid }: ImageSourceTabProps) => {
+  // Handler for network transmission
+  const handleSendToNetwork = () => {
+    const solver = useSolver.getState().solvers[uuid] as ImageSourceSolver;
+    if (solver) {
+      try {
+        solver.sendToNetwork();
+      } catch (error) {
+        console.error("Error sending to network:", error);
+        alert(`Failed to send data: ${error.message}`);
+      }
+    }
+  };
 
   return (
     <div>
@@ -223,6 +237,8 @@ export const ImageSourceTab = ({ uuid }: ImageSourceTabProps) => {
       <Graphing uuid={uuid}/>
       <ImpulseResponse uuid={uuid}/>
       <DataExport uuid={uuid}/>
+      <NetworkConfig />
+      <TransmissionStatus uuid={uuid} onSendToNetwork={handleSendToNetwork} />
       <Developer uuid={uuid}/>
     </div>
   );
