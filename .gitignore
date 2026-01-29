@@ -136,3 +136,13 @@ src/res/models/semi/semi.blend
 src/res/models/semi/semi.blend1
 src/res/models/semi/semi.blend
 src/res/models/semi/semi.blend1
+
+# Temporary files and debug documents
+*.pdf
+*.CF1
+*.CF2
+DEBUG_*.md
+DEPLOYMENT_GUIDE.md
+IMAGE_SOURCE_EXPORT_PLAN.md
+start-cram.ps1
+package-lock.json
