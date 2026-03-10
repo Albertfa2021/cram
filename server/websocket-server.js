@@ -1,9 +1,11 @@
+'use strict';
+
 const WebSocket = require('ws');
 const winston = require('winston');
 
 // Configure logger
 const logger = winston.createLogger({
-  level: 'info',
+  level: process.env.LOG_LEVEL || 'info',
   format: winston.format.combine(
     winston.format.timestamp(),
     winston.format.printf(({ timestamp, level, message }) => {
@@ -14,9 +16,10 @@ const logger = winston.createLogger({
 });
 
 class WebSocketServer {
-  constructor(config, tcpClient) {
+  constructor(config, tcpClient, grpcClient) {
     this.config = config;
     this.tcpClient = tcpClient;
+    this.grpcClient = grpcClient || null;
     this.wss = null;
     this.clients = new Set();
 
@@ -74,6 +77,14 @@ class WebSocketServer {
           this.handleSendData(ws, data.payload);
           break;
 
+        case 'STOP_STREAM':
+          this.handleStopStream(ws);
+          break;
+
+        case 'GET_GRPC_STATUS':
+          this.handleGetGrpcStatus(ws);
+          break;
+
         case 'UPDATE_CONFIG':
           this.handleUpdateConfig(ws, data.payload);
           break;
@@ -107,11 +118,69 @@ class WebSocketServer {
   }
 
   /**
-   * Handle SEND_DATA command
+   * Handle SEND_DATA command.
+   * Routes to gRPC streaming when a gRPC client is available,
+   * falls back to TCP otherwise.
    */
-  async handleSendData(ws, payload) {
+  handleSendData(ws, payload) {
+    if (this.grpcClient) {
+      try {
+        logger.info(`Starting gRPC stream for solver: ${payload.solverUUID}`);
+        this.grpcClient.startStream(payload.data);
+        this.sendToClient(ws, {
+          type: 'GRPC_STREAM_STARTED',
+          payload: { status: 'streaming' }
+        });
+      } catch (error) {
+        logger.error(`gRPC stream start failed: ${error.message}`);
+        this.sendToClient(ws, {
+          type: 'ERROR',
+          payload: { message: `gRPC stream error: ${error.message}` }
+        });
+      }
+    } else {
+      this.handleSendDataTCP(ws, payload);
+    }
+  }
+
+  /**
+   * Handle STOP_STREAM command — stop gRPC streaming.
+   */
+  handleStopStream(ws) {
+    if (this.grpcClient) {
+      this.grpcClient.stopStream();
+      this.sendToClient(ws, { type: 'GRPC_STREAM_STOPPED' });
+    } else {
+      this.sendToClient(ws, {
+        type: 'ERROR',
+        payload: { message: 'No gRPC client configured' }
+      });
+    }
+  }
+
+  /**
+   * Handle GET_GRPC_STATUS command.
+   */
+  handleGetGrpcStatus(ws) {
+    if (this.grpcClient) {
+      this.sendToClient(ws, {
+        type: 'GRPC_STATUS',
+        payload: this.grpcClient.getStatus()
+      });
+    } else {
+      this.sendToClient(ws, {
+        type: 'GRPC_STATUS',
+        payload: { connected: false, streaming: false, frameSeq: 0, ackCount: 0, queueDepth: 0 }
+      });
+    }
+  }
+
+  /**
+   * Legacy TCP transmission path.
+   */
+  async handleSendDataTCP(ws, payload) {
     try {
-      logger.info(`Transmitting data for solver: ${payload.solverUUID}`);
+      logger.info(`Transmitting data via TCP for solver: ${payload.solverUUID}`);
       const result = await this.tcpClient.send(payload.data);
 
       this.broadcast({
@@ -123,7 +192,7 @@ class WebSocketServer {
         }
       });
     } catch (error) {
-      logger.error(`Transmission failed: ${error.message}`);
+      logger.error(`TCP transmission failed: ${error.message}`);
       this.broadcast({
         type: 'TRANSMISSION_COMPLETE',
         payload: {
@@ -210,14 +279,19 @@ class WebSocketServer {
    */
   getFullStatus() {
     const tcpStatus = this.tcpClient.getStatus();
+    const grpcStatus = this.grpcClient ? this.grpcClient.getStatus() : null;
+    // When gRPC client is configured it acts as the primary transport.
+    // Report tcpConnected=true so the frontend "Send to Network" button is enabled.
+    const transportReady = this.grpcClient !== null || tcpStatus.connected;
     return {
       wsConnected: true,
-      tcpConnected: tcpStatus.connected,
-      tcpConnecting: tcpStatus.connecting,
+      tcpConnected: transportReady,
+      tcpConnecting: !transportReady && tcpStatus.connecting,
       tcpHost: tcpStatus.host,
       tcpPort: tcpStatus.port,
       reconnectAttempts: tcpStatus.reconnectAttempts,
-      queuedMessages: tcpStatus.queuedMessages
+      queuedMessages: tcpStatus.queuedMessages,
+      grpc: grpcStatus
     };
   }
 

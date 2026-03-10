@@ -21,7 +21,8 @@
     "server:install": "cd server && npm install",
     "server:start": "cd server && npm start",
     "server:dev": "cd server && npm run dev",
-    "server:test": "cd server && npm run test"
+    "server:test": "cd server && npm run test",
+    "server:test:grpc": "cd server && npm run test:grpc"
   },
   "dependencies": {
     "@blueprintjs/core": "^3.23.0",
