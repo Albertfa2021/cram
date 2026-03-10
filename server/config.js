@@ -21,6 +21,18 @@ const config = {
     connectionTimeout: parseInt(process.env.TCP_CONNECTION_TIMEOUT || '5000', 10)
   },
 
+  // gRPC / ts_auralization_controller configuration (CRAM → SAPF)
+  grpc: {
+    endpoint: process.env.GRPC_ENDPOINT || '127.0.0.1:50051',
+    instanceId: process.env.GRPC_INSTANCE_ID || '',
+    frameIntervalMs: parseInt(process.env.GRPC_FRAME_INTERVAL_MS || '20', 10),
+    // ts_auralization_controller: path to compiled dist/main.js
+    tsControllerPath: process.env.TS_CONTROLLER_PATH ||
+      path.resolve(__dirname, '../../sapf/examples/ts_auralization_controller/dist/main.js'),
+    // number of replay frames per session (default 300 = 6 s @ 20 ms)
+    replayFrames: parseInt(process.env.TS_CONTROLLER_FRAMES || '300', 10)
+  },
+
   // Logging configuration
   logging: {
     level: process.env.LOG_LEVEL || 'info'
