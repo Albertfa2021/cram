@@ -4,6 +4,8 @@ import { useNetwork } from './network-store';
 type WebSocketMessage =
   | { type: 'STATUS_UPDATE'; payload: any }
   | { type: 'TRANSMISSION_COMPLETE'; payload: any }
+  | { type: 'GRPC_STREAM_STARTED'; payload: any }
+  | { type: 'GRPC_STREAM_STOPPED'; payload: any }
   | { type: 'ERROR'; payload: any };
 
 class NetworkService {
@@ -107,6 +109,20 @@ class NetworkService {
           this.handleTransmissionComplete(message.payload);
           break;
 
+        case 'GRPC_STREAM_STARTED':
+          useNetwork.getState().set((draft) => {
+            draft.transmissionInProgress = false;
+            draft.lastTransmissionStatus = 'success';
+            draft.lastTransmissionTime = new Date().toISOString();
+          });
+          break;
+
+        case 'GRPC_STREAM_STOPPED':
+          useNetwork.getState().set((draft) => {
+            draft.transmissionInProgress = false;
+          });
+          break;
+
         case 'ERROR':
           this.handleErrorMessage(message.payload);
           break;
@@ -129,6 +145,7 @@ class NetworkService {
       draft.wsStatus = 'disconnected';
       draft.tcpConnected = false;
       draft.tcpStatus = 'disconnected';
+      draft.transmissionInProgress = false;
     });
 
     if (this.shouldReconnect) {

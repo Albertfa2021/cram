@@ -18,7 +18,9 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()]
 });
 
-const TMP_DIR = path.join(__dirname, 'tmp');
+const os = require('os');
+
+const TMP_DIR = path.join(os.tmpdir(), 'cram-sapf-tmp');
 
 /**
  * Drops a replay JSON file to TMP_DIR and spawns ts_auralization_controller
@@ -34,6 +36,7 @@ class ReplayRunner {
     this.ackCount = 0;
     this.lastQueueDepth = 0;
     this.lastFrameSeq = 0;
+    this.nextFrameSeq = 1;
 
     const tsPath = config.grpc.tsControllerPath;
     if (!fs.existsSync(tsPath)) {
@@ -59,7 +62,9 @@ class ReplayRunner {
     }
 
     const frameCount = this.config.grpc.replayFrames;
-    const frames = buildReplayFrames(cramData, frameCount);
+    const startSeq = this.nextFrameSeq;
+    const frames = buildReplayFrames(cramData, frameCount, startSeq);
+    this.nextFrameSeq = startSeq + frameCount;
 
     this.replayFile = path.join(TMP_DIR, `replay-${Date.now()}.json`);
     fs.writeFileSync(this.replayFile, JSON.stringify(frames));
@@ -87,6 +92,11 @@ class ReplayRunner {
 
     logger.info(`Spawned PID=${this.child.pid}`);
 
+    // Capture the file path for THIS process in the closure, so that if a new
+    // session starts (and this.replayFile is updated) before this process exits,
+    // we only delete the file that belongs to this process — not the new one.
+    const ownFile = this.replayFile;
+
     this.child.stdout.on('data', (chunk) => {
       const text = chunk.toString();
       // Parse ACK lines emitted by ts_auralization_controller:
@@ -113,14 +123,21 @@ class ReplayRunner {
       logger.info(`Process exited with code ${code}`);
       this.streaming = false;
       this.child = null;
-      this._cleanupReplayFile();
+      // Only delete the file owned by this process instance
+      if (ownFile && fs.existsSync(ownFile)) {
+        try { fs.unlinkSync(ownFile); } catch (_) {}
+      }
+      if (this.replayFile === ownFile) this.replayFile = null;
     });
 
     this.child.on('error', (err) => {
       logger.error(`Spawn error: ${err.message}`);
       this.streaming = false;
       this.child = null;
-      this._cleanupReplayFile();
+      if (ownFile && fs.existsSync(ownFile)) {
+        try { fs.unlinkSync(ownFile); } catch (_) {}
+      }
+      if (this.replayFile === ownFile) this.replayFile = null;
     });
   }
 
@@ -139,7 +156,6 @@ class ReplayRunner {
     }
     this.streaming = false;
     this.child = null;
-    this._cleanupReplayFile();
     logger.info('Streaming stopped');
   }
 
