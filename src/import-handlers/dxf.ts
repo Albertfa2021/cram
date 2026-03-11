@@ -20,7 +20,7 @@ const makeBufferGeometry = (position: number[], normals?: number[], texCoords?: 
 
 export function dxf(data: string){
   const defaultMaterial = [...useMaterial.getState().materials.values()][0];
-  const parsed = new DxfParser().parseSync(data) as Dxf;
+  const parsed = new DxfParser().parseSync(data) as unknown as Dxf;
   const layerMap = new Map<string, Container>();
   parsed.entities.filter(x=>x.type==="POLYLINE").forEach((polyline,i)=>{
     const material = polyline.materialObjectHandle;

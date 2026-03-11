@@ -14,7 +14,7 @@ const EditorContainer = styled.div`
     user-select: none;
 `;
 
-EditorContainer.defaultProps = {
+(EditorContainer as any).defaultProps = {
   id: "editor-container"
 };
 

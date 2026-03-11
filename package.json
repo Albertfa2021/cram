@@ -38,7 +38,7 @@
     "@types/d3": "6",
     "@types/plotly.js": "^1.50.12",
     "@types/react-tabs": "^2.3.2",
-    "@types/styled-components": "^5.1.7",
+    "@types/styled-components": "5.1.7",
     "@types/zip.js": "^2.0.28",
     "@visx/axis": "^1.6.1",
     "@visx/gradient": "^1.6.1",
