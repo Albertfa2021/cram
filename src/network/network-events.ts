@@ -19,6 +19,7 @@ declare global {
       solverUUID: string;
       data: any;
       timestamp: string;
+      directPathOnly?: boolean;
     };
     NETWORK_TRANSMISSION_COMPLETE: {
       success: boolean;
@@ -37,7 +38,7 @@ declare global {
 
 // Register event handlers
 on('NETWORK_SEND_DATA', (event) => {
-  networkService.sendData(event.solverUUID, event.data);
+  networkService.sendData(event.solverUUID, event.data, event.directPathOnly === true);
 });
 
 on('NETWORK_CONNECT', () => {

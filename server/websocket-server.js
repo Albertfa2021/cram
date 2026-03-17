@@ -81,6 +81,10 @@ class WebSocketServer {
           this.handleStopStream(ws);
           break;
 
+        case 'START_ROTATE_TEST':
+          this.handleStartRotateTest(ws, data.payload);
+          break;
+
         case 'GET_GRPC_STATUS':
           this.handleGetGrpcStatus(ws);
           break;
@@ -125,8 +129,9 @@ class WebSocketServer {
   handleSendData(ws, payload) {
     if (this.grpcClient) {
       try {
-        logger.info(`Starting gRPC stream for solver: ${payload.solverUUID}`);
-        this.grpcClient.startStream(payload.data);
+        const directPathOnly = payload.directPathOnly === true;
+        logger.info(`Starting gRPC stream for solver: ${payload.solverUUID}${directPathOnly ? ' [directPathOnly]' : ''}`);
+        this.grpcClient.startStream(payload.data, directPathOnly);
         this.sendToClient(ws, {
           type: 'GRPC_STREAM_STARTED',
           payload: { status: 'streaming' }
@@ -140,6 +145,52 @@ class WebSocketServer {
       }
     } else {
       this.handleSendDataTCP(ws, payload);
+    }
+  }
+
+  /**
+   * Handle START_ROTATE_TEST command — generate synthetic rotation frames.
+   */
+  handleStartRotateTest(ws, payload) {
+    if (!this.grpcClient) {
+      this.sendToClient(ws, {
+        type: 'ERROR',
+        payload: { message: 'No gRPC client configured' }
+      });
+      return;
+    }
+
+    try {
+      const config = payload || {};
+      logger.info(
+        `Starting rotation test: radius=${config.radius ?? 2.0}m ` +
+        `steps=${config.steps ?? 12} framesPerStep=${config.framesPerStep ?? 25}`
+      );
+
+      const result = this.grpcClient.startRotationTest(config);
+
+      this.broadcast({
+        type: 'ROTATE_TEST_STARTED',
+        payload: {
+          totalFrames: result.totalFrames,
+          totalSteps: result.totalSteps,
+          startSeq: result.startSeq
+        }
+      });
+
+      // Notify when the child process completes — poll streaming flag
+      const pollInterval = setInterval(() => {
+        if (!this.grpcClient.streaming) {
+          clearInterval(pollInterval);
+          this.broadcast({ type: 'ROTATE_TEST_COMPLETE', payload: {} });
+        }
+      }, 500);
+    } catch (error) {
+      logger.error(`Rotation test start failed: ${error.message}`);
+      this.sendToClient(ws, {
+        type: 'ERROR',
+        payload: { message: `Rotation test error: ${error.message}` }
+      });
     }
   }
 

@@ -959,14 +959,17 @@ export class ImageSourceSolver extends Solver {
     /**
      * Send ray paths data to network server
      * Emits NETWORK_SEND_DATA event with structured JSON payload
+     *
+     * @param options.directPathOnly - when true, only direct (order=0) paths are transmitted
      */
-    sendToNetwork(): void {
+    sendToNetwork(options?: { directPathOnly?: boolean }): void {
       try {
         const data = this.exportRayPathsData();
         emit("NETWORK_SEND_DATA", {
           solverUUID: this.uuid,
           data: data,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          directPathOnly: !!(options && options.directPathOnly)
         });
         console.log("[ImageSource] Data sent to network service");
       } catch (error) {

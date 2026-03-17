@@ -261,7 +261,7 @@ class NetworkService {
   /**
    * Send data to TCP server
    */
-  sendData(solverUUID: string, data: any) {
+  sendData(solverUUID: string, data: any, directPathOnly = false) {
     const timestamp = new Date().toISOString();
     useNetwork.getState().set((draft) => {
       draft.transmissionInProgress = true;
@@ -270,7 +270,7 @@ class NetworkService {
 
     const success = this.send({
       type: 'SEND_DATA',
-      payload: { solverUUID, data, timestamp }
+      payload: { solverUUID, data, directPathOnly, timestamp }
     });
 
     if (!success) {

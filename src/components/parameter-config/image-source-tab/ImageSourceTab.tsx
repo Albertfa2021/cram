@@ -215,12 +215,14 @@ const Developer = ({ uuid }: { uuid: string}) => {
   );
 }
 export const ImageSourceTab = ({ uuid }: ImageSourceTabProps) => {
+  const [directPathOnly, setDirectPathOnly] = useState(false);
+
   // Handler for network transmission
   const handleSendToNetwork = () => {
     const solver = useSolver.getState().solvers[uuid] as ImageSourceSolver;
     if (solver) {
       try {
-        solver.sendToNetwork();
+        solver.sendToNetwork({ directPathOnly });
       } catch (error) {
         console.error("Error sending to network:", error);
         alert(`Failed to send data: ${error.message}`);
@@ -238,6 +240,16 @@ export const ImageSourceTab = ({ uuid }: ImageSourceTabProps) => {
       <ImpulseResponse uuid={uuid}/>
       <DataExport uuid={uuid}/>
       <NetworkConfig />
+      <div style={{ padding: '8px 12px' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', userSelect: 'none' }}>
+          <input
+            type="checkbox"
+            checked={directPathOnly}
+            onChange={(e) => setDirectPathOnly(e.target.checked)}
+          />
+          仅直达声（过滤所有反射，只发送 order=0 路径）
+        </label>
+      </div>
       <TransmissionStatus uuid={uuid} onSendToNetwork={handleSendToNetwork} />
       <Developer uuid={uuid}/>
     </div>
