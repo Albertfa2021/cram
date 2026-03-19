@@ -85,6 +85,10 @@ class WebSocketServer {
           this.handleStartRotateTest(ws, data.payload);
           break;
 
+        case 'START_POSITION_SEQUENCE_TEST':
+          this.handleStartPositionSequenceTest(ws, data.payload);
+          break;
+
         case 'GET_GRPC_STATUS':
           this.handleGetGrpcStatus(ws);
           break;
@@ -172,19 +176,14 @@ class WebSocketServer {
       this.broadcast({
         type: 'ROTATE_TEST_STARTED',
         payload: {
+          runId: result.runId,
           totalFrames: result.totalFrames,
           totalSteps: result.totalSteps,
           startSeq: result.startSeq
         }
       });
 
-      // Notify when the child process completes — poll streaming flag
-      const pollInterval = setInterval(() => {
-        if (!this.grpcClient.streaming) {
-          clearInterval(pollInterval);
-          this.broadcast({ type: 'ROTATE_TEST_COMPLETE', payload: {} });
-        }
-      }, 500);
+      this.waitForRunCompletion('ROTATE_TEST_COMPLETE', result.runId);
     } catch (error) {
       logger.error(`Rotation test start failed: ${error.message}`);
       this.sendToClient(ws, {
@@ -192,6 +191,76 @@ class WebSocketServer {
         payload: { message: `Rotation test error: ${error.message}` }
       });
     }
+  }
+
+  /**
+   * Handle START_POSITION_SEQUENCE_TEST command — generate synthetic direct
+   * frames for an explicit azimuth sequence.
+   */
+  handleStartPositionSequenceTest(ws, payload) {
+    if (!this.grpcClient) {
+      this.sendToClient(ws, {
+        type: 'ERROR',
+        payload: { message: 'No gRPC client configured' }
+      });
+      return;
+    }
+
+    try {
+      const config = payload || {};
+      logger.info(
+        `Starting position sequence test: ` +
+        `steps=${Array.isArray(config.azimuths) ? config.azimuths.length : 0} ` +
+        `framesPerStep=${config.framesPerStep ?? 25} loops=${config.loops ?? 1}`
+      );
+
+      const result = this.grpcClient.startPositionSequenceTest(config);
+
+      this.broadcast({
+        type: 'POSITION_SEQUENCE_TEST_STARTED',
+        payload: {
+          runId: result.runId,
+          totalFrames: result.totalFrames,
+          totalSteps: result.totalSteps,
+          startSeq: result.startSeq,
+          azimuths: result.azimuths
+        }
+      });
+
+      this.waitForRunCompletion('POSITION_SEQUENCE_TEST_COMPLETE', result.runId);
+    } catch (error) {
+      logger.error(`Position sequence test start failed: ${error.message}`);
+      this.sendToClient(ws, {
+        type: 'ERROR',
+        payload: { message: `Position sequence test error: ${error.message}` }
+      });
+    }
+  }
+
+  waitForRunCompletion(eventType, runId) {
+    if (!this.grpcClient) {
+      return;
+    }
+
+    const pollInterval = setInterval(() => {
+      const status = this.grpcClient.getStatus();
+      const activeRunId = status.activeRun ? status.activeRun.runId : null;
+      const lastRunId = status.lastRun ? status.lastRun.runId : null;
+
+      if (status.streaming && activeRunId === runId) {
+        return;
+      }
+
+      if (!status.streaming && lastRunId === runId) {
+        clearInterval(pollInterval);
+        this.broadcast({
+          type: eventType,
+          payload: {
+            status: status.lastRun
+          }
+        });
+      }
+    }, 250);
   }
 
   /**

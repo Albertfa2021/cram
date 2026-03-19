@@ -37,6 +37,9 @@ class ReplayRunner {
     this.lastQueueDepth = 0;
     this.lastFrameSeq = 0;
     this.nextFrameSeq = 1;
+    this.nextRunId = 1;
+    this.activeRun = null;
+    this.lastRun = null;
 
     const tsPath = config.grpc.tsControllerPath;
     if (!fs.existsSync(tsPath)) {
@@ -67,79 +70,18 @@ class ReplayRunner {
     const frames = buildReplayFrames(cramData, frameCount, startSeq, directPathOnly);
     this.nextFrameSeq = startSeq + frameCount;
 
-    this.replayFile = path.join(TMP_DIR, `replay-${Date.now()}.json`);
-    fs.writeFileSync(this.replayFile, JSON.stringify(frames));
-    logger.info(
+    this._spawnReplayProcess(
+      frames,
+      `replay-${Date.now()}.json`,
+      'stream',
       `Wrote replay.json (${frames.length} frames, ` +
-      `${frames[0].sources[0].paths.length} paths) → ${this.replayFile}`
+        `${frames[0].sources[0].paths.length} paths)`,
+      {
+        frameCount,
+        startSeq,
+        directPathOnly
+      }
     );
-
-    const args = [
-      this.config.grpc.tsControllerPath,
-      '--replay-file', this.replayFile,
-      '--endpoint', this.config.grpc.endpoint,
-      '--interval-ms', String(this.config.grpc.frameIntervalMs),
-      '--ack-verbose', 'false'
-    ];
-
-    if (this.config.grpc.instanceId) {
-      args.push('--instance-id', this.config.grpc.instanceId);
-    }
-
-    this.child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    this.streaming = true;
-    this.ackCount = 0;
-    this.lastQueueDepth = 0;
-
-    logger.info(`Spawned PID=${this.child.pid}`);
-
-    // Capture the file path for THIS process in the closure, so that if a new
-    // session starts (and this.replayFile is updated) before this process exits,
-    // we only delete the file that belongs to this process — not the new one.
-    const ownFile = this.replayFile;
-
-    this.child.stdout.on('data', (chunk) => {
-      const text = chunk.toString();
-      // Parse ACK lines emitted by ts_auralization_controller:
-      // "ACK accepted_seq=N queue_depth=N apply_latency_us=N ..."
-      const ackMatch = text.match(/ACK\s+accepted_seq=(\d+)\s+queue_depth=(\d+)/);
-      if (ackMatch) {
-        this.ackCount += 1;
-        this.lastFrameSeq = parseInt(ackMatch[1], 10);
-        this.lastQueueDepth = parseInt(ackMatch[2], 10);
-      }
-      // Forward stdout to our logger at debug level
-      text.trim().split('\n').forEach(line => {
-        if (line) logger.debug(`[ts-ctrl] ${line}`);
-      });
-    });
-
-    this.child.stderr.on('data', (chunk) => {
-      chunk.toString().trim().split('\n').forEach(line => {
-        if (line) logger.warn(`[ts-ctrl] ${line}`);
-      });
-    });
-
-    this.child.on('close', (code) => {
-      logger.info(`Process exited with code ${code}`);
-      this.streaming = false;
-      this.child = null;
-      // Only delete the file owned by this process instance
-      if (ownFile && fs.existsSync(ownFile)) {
-        try { fs.unlinkSync(ownFile); } catch (_) {}
-      }
-      if (this.replayFile === ownFile) this.replayFile = null;
-    });
-
-    this.child.on('error', (err) => {
-      logger.error(`Spawn error: ${err.message}`);
-      this.streaming = false;
-      this.child = null;
-      if (ownFile && fs.existsSync(ownFile)) {
-        try { fs.unlinkSync(ownFile); } catch (_) {}
-      }
-      if (this.replayFile === ownFile) this.replayFile = null;
-    });
   }
 
   /**
@@ -158,6 +100,136 @@ class ReplayRunner {
     this.streaming = false;
     this.child = null;
     logger.info('Streaming stopped');
+  }
+
+  /**
+   * Generate synthetic direct-path frames for an explicit azimuth sequence and
+   * send them via ts_auralization_controller.
+   *
+   * @param {object} config
+   * @param {number[]} config.azimuths          - Azimuth sequence in degrees
+   * @param {number} [config.radius=2.0]        - Source distance in metres
+   * @param {number} [config.framesPerStep=25]  - Frames held per position (×20 ms = dwell time)
+   * @param {number} [config.loops=1]           - Number of times to repeat the azimuth list
+   * @param {number} [config.elevation=0]       - Source elevation in metres in SAPF coordinates
+   */
+  startPositionSequenceTest(config = {}) {
+    const {
+      azimuths = [0, 90, -90, -180],
+      radius = 2.0,
+      framesPerStep = 25,
+      loops = 1,
+      elevation = 0
+    } = config;
+
+    if (!Array.isArray(azimuths) || azimuths.length === 0) {
+      throw new Error('Position sequence requires a non-empty azimuths array');
+    }
+
+    const numericAzimuths = azimuths.map((value, index) => {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) {
+        throw new Error(`Invalid azimuth at index ${index}: ${value}`);
+      }
+      return parsed;
+    });
+
+    if (!Number.isFinite(radius) || radius <= 0) {
+      throw new Error(`Invalid radius: ${radius}`);
+    }
+    if (!Number.isInteger(framesPerStep) || framesPerStep <= 0) {
+      throw new Error(`Invalid framesPerStep: ${framesPerStep}`);
+    }
+    if (!Number.isInteger(loops) || loops <= 0) {
+      throw new Error(`Invalid loops: ${loops}`);
+    }
+    if (!Number.isFinite(elevation)) {
+      throw new Error(`Invalid elevation: ${elevation}`);
+    }
+
+    if (this.streaming) {
+      this.stopStream();
+    }
+
+    const repeatedAzimuths = [];
+    for (let loopIndex = 0; loopIndex < loops; loopIndex++) {
+      repeatedAzimuths.push(...numericAzimuths);
+    }
+
+    const totalSteps = repeatedAzimuths.length;
+    const frameCount = totalSteps * framesPerStep;
+    const startSeq = this.nextFrameSeq;
+    this.nextFrameSeq = startSeq + frameCount;
+
+    const baseTimestampUs = Date.now() * 1000;
+    const intervalUs = 20000; // 20 ms
+    const frames = [];
+
+    repeatedAzimuths.forEach((azimuthDeg, stepIndex) => {
+      const azimuthRad = azimuthDeg * Math.PI / 180;
+      const virtualPosM = {
+        x: radius * Math.cos(azimuthRad),
+        y: radius * Math.sin(azimuthRad),
+        z: elevation
+      };
+      const arrivalTimeS = Math.sqrt(radius * radius + elevation * elevation) / 343.0;
+
+      for (let frameOffset = 0; frameOffset < framesPerStep; frameOffset++) {
+        const frameIdx = stepIndex * framesPerStep + frameOffset;
+        frames.push({
+          sceneId: 'position-sequence-test',
+          frameSeq: startSeq + frameIdx,
+          timestampUs: baseTimestampUs + frameIdx * intervalUs,
+          receiverPosM: { x: 0, y: 0, z: 0 },
+          positionsAreWorld: false,
+          sources: [
+            {
+              sourceId: 1,
+              inputBusId: 1,
+              paths: [
+                {
+                  pathId: `azimuth-${stepIndex + 1}`,
+                  order: 0,
+                  active: true,
+                  virtualPosM,
+                  gainLinear: 1.0,
+                  delayS: 0.0,
+                  arrivalTimeS
+                }
+              ]
+            }
+          ]
+        });
+      }
+
+      logger.info(
+        `[position-sequence] step ${stepIndex + 1}/${totalSteps} ` +
+        `azimuth=${azimuthDeg.toFixed(1)}° radius=${radius}m`
+      );
+    });
+
+    this._spawnReplayProcess(
+      frames,
+      `replay-sequence-${Date.now()}.json`,
+      'position-sequence',
+      `[position-sequence] Wrote ${frames.length} frames`,
+      {
+        frameCount,
+        totalSteps,
+        startSeq,
+        azimuths: repeatedAzimuths.slice(),
+        radius,
+        elevation
+      }
+    );
+
+    return {
+      runId: this.activeRun ? this.activeRun.runId : null,
+      totalFrames: frames.length,
+      totalSteps,
+      startSeq,
+      azimuths: repeatedAzimuths
+    };
   }
 
   /**
@@ -245,17 +317,84 @@ class ReplayRunner {
       logger.info(`[rotation-test] step ${s + 1}/${totalSteps} azimuth=${azimuthDeg.toFixed(1)}°`);
     }
 
-    this.replayFile = path.join(TMP_DIR, `replay-rotate-${Date.now()}.json`);
-    fs.writeFileSync(this.replayFile, JSON.stringify(frames));
-    logger.info(
-      `[rotation-test] Wrote ${frames.length} frames → ${this.replayFile} ` +
-      `(${totalSteps} steps × ${framesPerStep} frames, radius=${radius}m)`
+    this._spawnReplayProcess(
+      frames,
+      `replay-rotate-${Date.now()}.json`,
+      'rotation-test',
+      `[rotation-test] Wrote ${frames.length} frames ` +
+        `(${totalSteps} steps × ${framesPerStep} frames, radius=${radius}m)`,
+      {
+        frameCount,
+        totalSteps,
+        startSeq,
+        radius,
+        steps,
+        framesPerStep,
+        rotations,
+        startAzimuth
+      }
     );
+
+    return {
+      runId: this.activeRun ? this.activeRun.runId : null,
+      totalFrames: frames.length,
+      totalSteps,
+      startSeq
+    };
+  }
+
+  /** Alias for stopStream — matches old GrpcClient interface. */
+  disconnect() {
+    this.stopStream();
+  }
+
+  /**
+   * Return status compatible with old grpcClient.getStatus().
+   */
+  getStatus() {
+    return {
+      connected: this.streaming,
+      streaming: this.streaming,
+      frameSeq: this.lastFrameSeq,
+      ackCount: this.ackCount,
+      queueDepth: this.lastQueueDepth,
+      activeRun: this.activeRun,
+      lastRun: this.lastRun
+    };
+  }
+
+  // ── Private ──────────────────────────────────────────────────────────────
+
+  _cleanupReplayFile() {
+    if (this.replayFile && fs.existsSync(this.replayFile)) {
+      try {
+        fs.unlinkSync(this.replayFile);
+      } catch (_) {}
+      this.replayFile = null;
+    }
+  }
+
+  _spawnReplayProcess(frames, fileName, tag, summaryMessage, metadata = {}) {
+    this.replayFile = path.join(TMP_DIR, fileName);
+    fs.writeFileSync(this.replayFile, JSON.stringify(frames));
+    logger.info(`${summaryMessage} → ${this.replayFile}`);
+
+    const runId = this.nextRunId++;
+    this.activeRun = {
+      runId,
+      tag,
+      startedAt: new Date().toISOString(),
+      frameCount: frames.length,
+      ...metadata
+    };
+    this.lastRun = null;
 
     const args = [
       this.config.grpc.tsControllerPath,
       '--replay-file', this.replayFile,
+      '--frames', '0',
       '--endpoint', this.config.grpc.endpoint,
+      '--proto-path', this.config.grpc.protoPath,
       '--interval-ms', String(this.config.grpc.frameIntervalMs),
       '--ack-verbose', 'false'
     ];
@@ -268,14 +407,17 @@ class ReplayRunner {
     this.streaming = true;
     this.ackCount = 0;
     this.lastQueueDepth = 0;
+    this.lastFrameSeq = 0;
 
-    logger.info(`[rotation-test] Spawned PID=${this.child.pid}`);
+    logger.info(`[${tag}] Spawned PID=${this.child.pid} runId=${runId}`);
 
     const ownFile = this.replayFile;
 
     this.child.stdout.on('data', (chunk) => {
       const text = chunk.toString();
-      const ackMatch = text.match(/ACK\s+accepted_seq=(\d+)\s+queue_depth=(\d+)/);
+      const ackMatch =
+        text.match(/ACK\s+accepted=(\d+)\s+queue=(\d+)/) ||
+        text.match(/ACK\s+accepted_seq=(\d+)\s+queue_depth=(\d+)/);
       if (ackMatch) {
         this.ackCount += 1;
         this.lastFrameSeq = parseInt(ackMatch[1], 10);
@@ -293,9 +435,19 @@ class ReplayRunner {
     });
 
     this.child.on('close', (code) => {
-      logger.info(`[rotation-test] Process exited with code ${code}`);
+      logger.info(`[${tag}] Process exited with code ${code} runId=${runId}`);
       this.streaming = false;
       this.child = null;
+      this.lastRun = {
+        ...(this.activeRun || { runId, tag }),
+        endedAt: new Date().toISOString(),
+        exitCode: code,
+        error: null,
+        ackCount: this.ackCount,
+        frameSeq: this.lastFrameSeq,
+        queueDepth: this.lastQueueDepth
+      };
+      this.activeRun = null;
       if (ownFile && fs.existsSync(ownFile)) {
         try { fs.unlinkSync(ownFile); } catch (_) {}
       }
@@ -303,45 +455,24 @@ class ReplayRunner {
     });
 
     this.child.on('error', (err) => {
-      logger.error(`[rotation-test] Spawn error: ${err.message}`);
+      logger.error(`[${tag}] Spawn error: ${err.message} runId=${runId}`);
       this.streaming = false;
       this.child = null;
+      this.lastRun = {
+        ...(this.activeRun || { runId, tag }),
+        endedAt: new Date().toISOString(),
+        exitCode: null,
+        error: err.message,
+        ackCount: this.ackCount,
+        frameSeq: this.lastFrameSeq,
+        queueDepth: this.lastQueueDepth
+      };
+      this.activeRun = null;
       if (ownFile && fs.existsSync(ownFile)) {
         try { fs.unlinkSync(ownFile); } catch (_) {}
       }
       if (this.replayFile === ownFile) this.replayFile = null;
     });
-
-    return { totalFrames: frames.length, totalSteps, startSeq };
-  }
-
-  /** Alias for stopStream — matches old GrpcClient interface. */
-  disconnect() {
-    this.stopStream();
-  }
-
-  /**
-   * Return status compatible with old grpcClient.getStatus().
-   */
-  getStatus() {
-    return {
-      connected: this.streaming,
-      streaming: this.streaming,
-      frameSeq: this.lastFrameSeq,
-      ackCount: this.ackCount,
-      queueDepth: this.lastQueueDepth
-    };
-  }
-
-  // ── Private ──────────────────────────────────────────────────────────────
-
-  _cleanupReplayFile() {
-    if (this.replayFile && fs.existsSync(this.replayFile)) {
-      try {
-        fs.unlinkSync(this.replayFile);
-      } catch (_) {}
-      this.replayFile = null;
-    }
   }
 }
 

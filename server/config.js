@@ -25,6 +25,8 @@ const config = {
   grpc: {
     endpoint: process.env.GRPC_ENDPOINT || '127.0.0.1:50051',
     instanceId: process.env.GRPC_INSTANCE_ID || '',
+    protoPath: process.env.GRPC_PROTO_PATH ||
+      path.resolve(__dirname, '../../sapf/services/proto/path_render.proto'),
     frameIntervalMs: parseInt(process.env.GRPC_FRAME_INTERVAL_MS || '20', 10),
     // ts_auralization_controller: path to compiled dist/main.js
     tsControllerPath: process.env.TS_CONTROLLER_PATH ||
