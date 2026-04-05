@@ -17,9 +17,13 @@ import PropertyRowFolder from "../property-row/PropertyRowFolder";
 import PropertyRow from "../property-row/PropertyRow";
 import PropertyRowLabel from "../property-row/PropertyRowLabel";
 import PropertyRowCheckbox from "../property-row/PropertyRowCheckbox";
+import PropertyRowButton from "../property-row/PropertyRowButton";
 import shallow from "zustand/shallow";
 import { NetworkConfig } from "./NetworkConfig";
 import { TransmissionStatus } from "./TransmissionStatus";
+import Source, { DirectivityHandler } from "../../../objects/source";
+import { applyClfArrayBufferToSource, applyClfTextToSource } from "./clf-import";
+import { DEFAULT_IMAGE_SOURCE_CLF } from "../../../res/clf/default-image-source-directivity";
 
 export interface ImageSourceTabProps {
   uuid: string;
@@ -140,6 +144,202 @@ const ReceiverConfiguration = ({ uuid }: { uuid: string}) => {
   );
 }
 
+const SourceDirectivityConfiguration = ({ uuid }: { uuid: string }) => {
+  const [open, toggle] = useToggle(true);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [manualClfText, setManualClfText] = useState(DEFAULT_IMAGE_SOURCE_CLF);
+  const [selectedSourceId, setSelectedSourceId] = useState("");
+  const [statusMessage, setStatusMessage] = useState("Built-in example CLF loaded");
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  const [sourceIDs, setSourceIDs] = useSolverProperty<ImageSourceSolver, "sourceIDs">(
+    uuid,
+    "sourceIDs",
+    "IMAGESOURCE_SET_PROPERTY"
+  );
+  const sources = useContainer((state) => {
+    return filteredMapObject(state.containers, (container) =>
+      container.kind === "source" ? (container as Source) : undefined
+    ) as Source[];
+  });
+
+  useEffect(() => {
+    if (!selectedSourceId && sources.length > 0) {
+      setSelectedSourceId(sources[0].uuid);
+    }
+
+    if (selectedSourceId && !sources.some((source) => source.uuid === selectedSourceId)) {
+      setSelectedSourceId(sources[0]?.uuid || "");
+    }
+  }, [selectedSourceId, sources]);
+
+  const handleSelectedSourceChange = (nextSourceId: string) => {
+    setSelectedSourceId(nextSourceId);
+    if (!nextSourceId || sourceIDs.includes(nextSourceId)) {
+      return;
+    }
+
+    setSourceIDs({
+      value: [...sourceIDs, nextSourceId]
+    });
+    const source = sources.find((item) => item.uuid === nextSourceId);
+    setStatusMessage(source ? `Linked source to solver: ${source.name}` : "Linked source to solver");
+  };
+
+  const selectedSource = sources.find((source) => source.uuid === selectedSourceId) || null;
+  const directivitySummary = selectedSource
+    ? `${selectedSource.directivityLabel || "Omni"} | Type=${
+        selectedSource.directivityHandler && selectedSource.directivityHandler.sourceDirType !== undefined
+          ? selectedSource.directivityHandler.sourceDirType
+          : 0
+      }`
+    : "No source selected";
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.addEventListener("loadend", () => {
+      const lowerName = file.name.toLowerCase();
+
+      if (lowerName.endsWith(".cf1") || lowerName.endsWith(".cf2")) {
+        if (!selectedSource) {
+          setStatusMessage("Select a source before importing a binary CLF file.");
+          return;
+        }
+
+        try {
+          applyClfArrayBufferToSource(selectedSource, reader.result as ArrayBuffer);
+          setStatusMessage(`Imported official CLF distribution: ${file.name}`);
+          setRefreshTick((value) => value + 1);
+          setDialogOpen(false);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setStatusMessage(`Failed to import ${file.name}: ${message}`);
+        }
+        return;
+      }
+
+      setManualClfText((reader.result as string) || "");
+      setStatusMessage(`Loaded CLF text: ${file.name}`);
+    });
+
+    if (file.name.toLowerCase().endsWith(".cf1") || file.name.toLowerCase().endsWith(".cf2")) {
+      reader.readAsArrayBuffer(file);
+      return;
+    }
+
+    reader.readAsText(file);
+  };
+
+  const loadBuiltInExample = () => {
+    setManualClfText(DEFAULT_IMAGE_SOURCE_CLF);
+    setStatusMessage("Built-in example CLF loaded");
+  };
+
+  const applyClfText = () => {
+    if (!selectedSource) {
+      setStatusMessage("Select a source before applying CLF.");
+      return;
+    }
+
+    if (!manualClfText.trim()) {
+      setStatusMessage("CLF text is empty.");
+      return;
+    }
+
+    try {
+      applyClfTextToSource(selectedSource, manualClfText);
+      setStatusMessage(`Applied CLF to source: ${selectedSource.name}`);
+      setRefreshTick((value) => value + 1);
+      setDialogOpen(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`Failed to apply CLF: ${message}`);
+    }
+  };
+
+  const resetToOmni = () => {
+    if (!selectedSource) {
+      setStatusMessage("Select a source before resetting directivity.");
+      return;
+    }
+
+    selectedSource.directivityHandler = new DirectivityHandler(0);
+    selectedSource.directivityLabel = "Omni";
+    setStatusMessage(`Reset source to omni: ${selectedSource.name}`);
+    setRefreshTick((value) => value + 1);
+  };
+
+  return (
+    <PropertyRowFolder label="Source Directivity" open={open} onOpenClose={toggle}>
+      <PropertyRow>
+        <PropertyRowLabel label="Target Source" tooltip="Choose which assigned source receives the CLF directivity data" />
+        <select
+          value={selectedSourceId}
+          onChange={(event) => handleSelectedSourceChange(event.currentTarget.value)}
+          disabled={sources.length === 0}
+        >
+          {sources.length === 0 && <option value="">No source selected</option>}
+          {sources.map((source) => (
+            <option key={source.uuid} value={source.uuid}>
+              {source.name}
+            </option>
+          ))}
+        </select>
+      </PropertyRow>
+      <PropertyRow key={refreshTick}>
+        <PropertyRowLabel label="Current Mode" hasToolTip={false} />
+        <div>{directivitySummary}</div>
+      </PropertyRow>
+      <PropertyRow>
+        <PropertyRowLabel label="Status" hasToolTip={false} />
+        <div>{statusMessage}</div>
+      </PropertyRow>
+      <PropertyRow>
+        <PropertyRowLabel label="Open CLF Window" tooltip="Open a manual CLF input window for the selected source" />
+        <PropertyRowButton onClick={() => setDialogOpen(true)} label="Open CLF Window" disabled={sources.length === 0} />
+      </PropertyRow>
+      <PropertyRow>
+        <PropertyRowLabel label="Reset To Omni" tooltip="Reset the selected source directivity back to omni" />
+        <PropertyRowButton onClick={() => resetToOmni()} label="Reset To Omni" disabled={sources.length === 0} />
+      </PropertyRow>
+
+      {dialogOpen && (
+        <div className="imagesource-directivity-modal">
+          <div className="imagesource-directivity-modal__panel">
+            <h3>Manual CLF Input</h3>
+            <p>Load a text `.tab` CLF file, import an official binary `.CF1/.CF2` distribution file, or paste CLF text manually.</p>
+            <input type="file" accept=".tab,.cf1,.cf2,.CF1,.CF2" onChange={handleFileChange} />
+            <div className="imagesource-directivity-modal__actions imagesource-directivity-modal__actions--top">
+              <button type="button" onClick={loadBuiltInExample}>
+                Load Built-in Example
+              </button>
+            </div>
+            <textarea
+              className="imagesource-directivity-modal__textarea"
+              value={manualClfText}
+              onChange={(event) => setManualClfText(event.currentTarget.value)}
+              placeholder="Paste CLF file content here"
+            />
+            <div className="imagesource-directivity-modal__actions">
+              <button type="button" onClick={applyClfText}>
+                Apply CLF
+              </button>
+              <button type="button" onClick={() => setDialogOpen(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </PropertyRowFolder>
+  );
+};
+
 const Graphing = ({ uuid }: { uuid: string}) => {
   const [open, toggle] = useToggle(true);
   return (
@@ -235,6 +435,7 @@ export const ImageSourceTab = ({ uuid }: ImageSourceTabProps) => {
       <General uuid={uuid} />
       <Calculation uuid={uuid}/>
       <SourceConfiguration uuid={uuid}/>
+      <SourceDirectivityConfiguration uuid={uuid} />
       <ReceiverConfiguration uuid={uuid}/>
       <Graphing uuid={uuid}/>
       <ImpulseResponse uuid={uuid}/>

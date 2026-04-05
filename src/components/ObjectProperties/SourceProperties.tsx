@@ -16,7 +16,7 @@ import PropertyRowCheckbox from "../parameter-config/property-row/PropertyRowChe
 import { ObjectPropertyInputEvent } from ".";
 import { IToastProps } from "@blueprintjs/core/lib/esm/components/toast/toast";
 import decimalPrecision from "../../common/decimal-precision";
-import {CLFParser} from "../../import-handlers/CLFParser";
+import { parseCLFInput } from "../../import-handlers/CLFAutoParser";
 
 export interface SourcePropertiesProps {
   object: Source;
@@ -226,26 +226,28 @@ export default function SourceProperties(props: SourcePropertiesProps) {
           <input
           type = "file"
           id = "clfinput"
-          accept = ".tab"
+          accept = ".tab,.cf1,.cf2,.CF1,.CF2"
           onChange={(e) => {
               console.log(e.target.files);
+              const file = e.target!.files![0];
               const reader = new FileReader();
               
               reader.addEventListener('loadend', (loadEndEvent) => {
-                  let filecontents:string = reader.result as string; 
-                  let clf = new CLFParser(filecontents);
-                  let clf_results = clf.parse();
+                  let clf_results = parseCLFInput(reader.result as string | ArrayBuffer);
                   let dh = new DirectivityHandler(1,clf_results); 
 
                   props.object.directivityHandler = dh; 
 
-                  // display CLF parser object (debugging)
-                  console.log(clf);
                   // display CLF parser results (debugging)
                   console.log(clf_results);
               });
 
-              reader.readAsText(e.target!.files![0]);
+              if (file.name.toLowerCase().endsWith(".cf1") || file.name.toLowerCase().endsWith(".cf2")) {
+                reader.readAsArrayBuffer(file);
+                return;
+              }
+
+              reader.readAsText(file);
               
             }
           }

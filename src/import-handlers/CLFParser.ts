@@ -2,7 +2,7 @@ import { BREADCRUMBS_COLLAPSED } from "@blueprintjs/core/lib/esm/common/classes"
 import { ifError } from "assert";
 import { forInRight, fromPairs } from "lodash";
 import {Octave, ThirdOctave} from "../compute/acoustics/bands";
-import {directivityData} from "../objects/source";
+import {directivityData} from "../objects/source-directivity";
 
 export class CLFParser{
 
@@ -243,6 +243,9 @@ export class CLFParser{
                 let nextBandIndex: number; 
 
                 nextBandIndex = this.parseProperty("<BAND>", searchStart).nextIndex; 
+                if(nextBandIndex === 0){
+                    nextBandIndex = this.clfData.length + 1;
+                }
 
                 let j = 0; 
                 for(let i = parseResult.nextIndex; i<nextBandIndex-1; i++){

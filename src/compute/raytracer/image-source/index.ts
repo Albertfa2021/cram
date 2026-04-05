@@ -17,6 +17,11 @@ import { pickProps } from "../../../common/helpers";
 import { normalize } from "../../acoustics";
 import FileSaver from 'file-saver';
 import { audioEngine } from "../../../audio-engine/audio-engine";
+import {
+  applySourceDirectivityToPressures,
+  extractEmissionDirectionFromPathPoints,
+  getSourceDirectionDiagnostics
+} from "./directivity";
 
 function createLine(){
   let points = [];
@@ -153,22 +158,24 @@ class ImageSource{
 
 }
 
-interface intersection{
+export interface ImageSourceIntersection{
   point: Vector3; 
   reflectingSurface: Surface | null;
   angle: number | null; 
 }
 
-class ImageSourcePath{
+export class ImageSourcePath{
 
-  public path: intersection[]; 
+  public path: ImageSourceIntersection[]; 
   public uuid; 
   public highlight; 
+  public baseSource: Source;
   
-  constructor(path: intersection[]){
+  constructor(path: ImageSourceIntersection[], baseSource: Source){
     this.path = path; 
     this.uuid = uuid(); 
     this.highlight = false; 
+    this.baseSource = baseSource;
   }
 
   markup(){
@@ -237,10 +244,28 @@ class ImageSourcePath{
     }
     return length; 
   }
+
+  public getEmissionDirectionWorld(): Vector3 | null {
+    return extractEmissionDirectionFromPathPoints(this.path.map((intersection) => intersection.point.clone()));
+  }
+
+  public getSourceDirectionDiagnostics(freqs: number[]) {
+    const emissionDirection = this.getEmissionDirectionWorld();
+    if (!emissionDirection) {
+      return null;
+    }
+
+    return getSourceDirectionDiagnostics(this.baseSource as any, freqs, emissionDirection);
+  }
   
   public arrivalPressure(initialSPL: number[], freqs: number[]): number[]{
+    const initialPressures = ac.Lp2P(initialSPL) as number[];
+    const emissionDirection = this.getEmissionDirectionWorld();
+    const directivityAdjustedPressures = emissionDirection
+      ? applySourceDirectivityToPressures(this.baseSource as any, freqs, initialPressures, emissionDirection)
+      : initialPressures;
 
-    let intensity = ac.P2I(ac.Lp2P(initialSPL)) as number[];  
+    let intensity = ac.P2I(directivityAdjustedPressures) as number[];  
     let arrivalPressure = []; 
 
     for(let s = 0; s<this.path.length; s++){
@@ -851,6 +876,7 @@ export class ImageSourceSolver extends Solver {
     private extractPathData(path: ImageSourcePath, initialSPL: number[], soundSpeed: number): any {
       const arrivalPressureArray = path.arrivalPressure(initialSPL, this.frequencies);
       const arrivalTime = path.arrivalTime(soundSpeed);
+      const directionDiagnostics = path.getSourceDirectionDiagnostics(this.frequencies);
 
       // Convert to frequency-mapped format
       const arrivalPressure = {};
@@ -895,6 +921,11 @@ export class ImageSourceSolver extends Solver {
         pathLength: parseFloat(path.totalLength.toFixed(4)),
         arrivalTime: parseFloat(arrivalTime.toFixed(6)),
         arrivalPressure: arrivalPressure,
+        emissionDirectionWorld: directionDiagnostics?.emissionDirectionWorld || null,
+        emissionDirectionLocal: directionDiagnostics?.emissionDirectionLocal || null,
+        emissionPhi: directionDiagnostics && directionDiagnostics.phi !== undefined ? directionDiagnostics.phi : null,
+        emissionTheta: directionDiagnostics && directionDiagnostics.theta !== undefined ? directionDiagnostics.theta : null,
+        sourceDirectivityPerBand: directionDiagnostics?.sourceDirectivityPerBand || null,
         intersections: intersections,
         imageSources: imageSources
       };
@@ -1180,11 +1211,11 @@ function constructImageSourcePath(is: ImageSource, listener: Receiver): ImageSou
   // note: will return null if no valid path
   // otherwise, will return ImageSourcePath object representing path 
 
-  let path: intersection[] = []; 
+  let path: ImageSourceIntersection[] = []; 
   
   let maxOrder = is.order; 
 
-  let listenerStart: intersection = {
+  let listenerStart: ImageSourceIntersection = {
     point: listener.position.clone(),
     reflectingSurface: null, 
     angle: null,
@@ -1209,7 +1240,7 @@ function constructImageSourcePath(is: ImageSource, listener: Receiver): ImageSou
     
     if(intersections.length>0){
       
-      let intersect: intersection = {
+      let intersect: ImageSourceIntersection = {
         point: intersections[0].point, 
         reflectingSurface: is.reflector,
         angle: direction.clone().multiplyScalar(-1).angleTo(intersections[0].face!.normal),
@@ -1226,14 +1257,14 @@ function constructImageSourcePath(is: ImageSource, listener: Receiver): ImageSou
 
   }
 
-  let sourceEnd: intersection = {
+  let sourceEnd: ImageSourceIntersection = {
     point: is.position.clone(),  
     reflectingSurface: null, 
     angle: null, 
   };
 
   path[0] = sourceEnd; 
-  let pathObject = new ImageSourcePath(path); 
+  let pathObject = new ImageSourcePath(path, is.baseSource); 
   return pathObject;
 }
 
